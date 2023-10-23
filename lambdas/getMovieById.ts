@@ -1,17 +1,15 @@
 import { APIGatewayProxyHandlerV2 } from "aws-lambda";
-
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, GetCommand } from "@aws-sdk/lib-dynamodb";
 
-const ddbDocClient = createDDbDocClient();
+const ddbDocClient = createDynamoDBDocClient();
 
-export const handler: APIGatewayProxyHandlerV2 = async (event, context) => { // Note change
+export const handler: APIGatewayProxyHandlerV2 = async (event, context) => {
   try {
     console.log("Event: ", event);
-    // const parameters = event?.queryStringParameters;
-    // const movieId = parameters ? parseInt(parameters.movieId) : undefined;
-    const parameters  = event?.pathParameters;
+    const parameters = event?.pathParameters;
     const movieId = parameters?.movieId ? parseInt(parameters.movieId) : undefined;
+    const includeCast = event.queryStringParameters?.cast === "true";
 
     if (!movieId) {
       return {
@@ -23,14 +21,13 @@ export const handler: APIGatewayProxyHandlerV2 = async (event, context) => { // 
       };
     }
 
-    const commandOutput = await ddbDocClient.send(
-      new GetCommand({
-        TableName: process.env.TABLE_NAME,
-        Key: { movieId: movieId },
-      })
-    );
-    console.log("GetCommand response: ", commandOutput);
-    if (!commandOutput.Item) {
+    const movieParams = {
+      TableName: process.env.MOVIE_TABLE_NAME,
+      Key: { movieId: movieId },
+    };
+
+    const movieResponse = await ddbDocClient.send(new GetCommand(movieParams));
+    if (!movieResponse.Item) {
       return {
         statusCode: 404,
         headers: {
@@ -39,17 +36,24 @@ export const handler: APIGatewayProxyHandlerV2 = async (event, context) => { // 
         body: JSON.stringify({ Message: "Invalid movie Id" }),
       };
     }
-    const body = {
-      data: commandOutput.Item,
-    };
 
-    // Return Response
+    if (includeCast) {
+      const castParams = {
+        TableName: process.env.MOVIE_CAST_TABLE_NAME,
+        Key: { movieId: movieId },
+      };
+      const castResponse = await ddbDocClient.send(new GetCommand(castParams));
+      if (castResponse.Item) {
+        movieResponse.Item["cast"] = castResponse.Item;
+      }
+    }
+
     return {
       statusCode: 200,
       headers: {
         "content-type": "application/json",
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(movieResponse.Item),
     };
   } catch (error: any) {
     console.log(JSON.stringify(error));
@@ -63,16 +67,18 @@ export const handler: APIGatewayProxyHandlerV2 = async (event, context) => { // 
   }
 };
 
-function createDDbDocClient() {
+function createDynamoDBDocClient() {
   const ddbClient = new DynamoDBClient({ region: process.env.REGION });
-  const marshallOptions = {
-    convertEmptyValues: true,
-    removeUndefinedValues: true,
-    convertClassInstanceToMap: true,
+  const translateConfig = {
+    marshallOptions: {
+      convertEmptyValues: true,
+      removeUndefinedValues: true,
+      convertClassInstanceToMap: true,
+    },
+    unmarshallOptions: {
+      wrapNumbers: false,
+    },
   };
-  const unmarshallOptions = {
-    wrapNumbers: false,
-  };
-  const translateConfig = { marshallOptions, unmarshallOptions };
   return DynamoDBDocumentClient.from(ddbClient, translateConfig);
 }
+
